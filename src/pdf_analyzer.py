@@ -4,6 +4,7 @@ from PyPDF2 import PdfReader
 import os
 from pathlib import Path
 from datetime import datetime
+import unicodedata
 
 def extract_purpose(text):
     """
@@ -91,6 +92,152 @@ def analyze_pdf(pdf_path):
     df = pd.DataFrame(data)
     return df
 
+def clean_text(text):
+    """
+    Limpia el texto de caracteres especiales y normaliza el formato.
+    
+    Args:
+        text (str): Texto a limpiar
+        
+    Returns:
+        str: Texto limpio
+    """
+    # Normalizar caracteres especiales
+    text = unicodedata.normalize('NFKD', text)
+    
+    # Reemplazar caracteres específicos
+    replacements = {
+        '√ö': 'ó',
+        '√≥': 'ó',
+        '√∫': 'ú',
+        '√≠': 'í',
+        '√°': 'á',
+        '√©': 'é',
+        '√±': 'ñ',
+        '√º': 'ü'
+    }
+    
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Eliminar texto no deseado al final
+    text = re.sub(r'\s*El Presidente de la Rep.*$', '', text)
+    
+    # Eliminar guiones al final de línea
+    text = re.sub(r'-\s*\n\s*', '', text)
+    
+    # Eliminar espacios múltiples
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
+
+def extract_table_of_contents(pdf_path):
+    """
+    Extrae la tabla de contenido de un PDF con formato de dos columnas.
+    
+    Args:
+        pdf_path (str): Ruta al archivo PDF
+        
+    Returns:
+        pd.DataFrame: DataFrame con la información extraída de la tabla de contenido
+    """
+    # Leer el PDF
+    reader = PdfReader(pdf_path)
+    full_text = '\n'.join(page.extract_text() for page in reader.pages if page.extract_text())
+    
+    # Dividir el texto en líneas
+    lines = full_text.split('\n')
+    
+    data = []
+    current_entity = None
+    current_title = []
+    collecting_title = False
+    
+    # Patrón para identificar entidades (ministerios u organismos)
+    entity_pattern = re.compile(r'^(Ministerio|Departamento|Entidad|Organismo)[^\n]+', re.IGNORECASE)
+    
+    # Patrón para identificar el inicio de un decreto o resolución
+    decree_start_pattern = re.compile(r'^(DECRETO|RESOLUCIÓN)\s+NÚMERO\s+\d+', re.IGNORECASE)
+    
+    # Patrón para identificar el final de un título (generalmente termina con un número de página)
+    page_number_pattern = re.compile(r'\s+\d+$')
+    
+    i = 0
+    while i < len(lines):
+        line = lines[i].strip()
+        
+        # Si la línea está vacía, continuar con la siguiente
+        if not line:
+            i += 1
+            continue
+            
+        # Verificar si la línea es una entidad
+        entity_match = entity_pattern.search(line)
+        if entity_match:
+            # Si estábamos recolectando un título, guardarlo antes de cambiar de entidad
+            if collecting_title and current_title and current_entity:
+                full_title = ' '.join(current_title)
+                data.append({
+                    'nombre_decreto': full_title,
+                    'entidad': current_entity
+                })
+                current_title = []
+                collecting_title = False
+            
+            current_entity = line.strip()
+            i += 1
+            continue
+            
+        # Verificar si la línea es el inicio de un decreto
+        decree_match = decree_start_pattern.search(line)
+        if decree_match and current_entity:
+            # Si estábamos recolectando un título anterior, guardarlo
+            if collecting_title and current_title:
+                full_title = ' '.join(current_title)
+                data.append({
+                    'nombre_decreto': full_title,
+                    'entidad': current_entity
+                })
+            
+            current_title = [line]
+            collecting_title = True
+            i += 1
+            
+            # Continuar recolectando líneas hasta encontrar el número de página
+            while i < len(lines):
+                next_line = lines[i].strip()
+                
+                # Si encontramos una nueva entidad o decreto, terminar la recolección
+                if entity_pattern.search(next_line) or decree_start_pattern.search(next_line):
+                    break
+                    
+                # Si encontramos un número de página, terminar la recolección
+                if page_number_pattern.search(next_line):
+                    # Remover el número de página
+                    next_line = page_number_pattern.sub('', next_line).strip()
+                    current_title.append(next_line)
+                    break
+                
+                # Si la línea no está vacía, agregarla al título
+                if next_line:
+                    current_title.append(next_line)
+                
+                i += 1
+            
+            # Guardar el título completo
+            if current_title:
+                full_title = ' '.join(current_title)
+                data.append({
+                    'nombre_decreto': full_title,
+                    'entidad': current_entity
+                })
+                current_title = []
+                collecting_title = False
+        else:
+            i += 1
+    
+    return pd.DataFrame(data)
+
 def main():
     # Obtener la ruta del directorio actual
     current_dir = Path(__file__).parent.parent
@@ -105,7 +252,7 @@ def main():
     all_data = []
     for pdf_file in data_dir.glob('*.pdf'):
         print(f"Procesando {pdf_file.name}...")
-        df = analyze_pdf(str(pdf_file))
+        df = extract_table_of_contents(str(pdf_file))
         df['archivo'] = pdf_file.name
         all_data.append(df)
     
@@ -115,7 +262,7 @@ def main():
         
         # Generar nombre de archivo con timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_file = resultados_dir / f'resultados_{timestamp}.csv'
+        output_file = resultados_dir / f'tabla_contenido_{timestamp}.csv'
         
         # Guardar resultados
         final_df.to_csv(output_file, index=False, encoding='utf-8')
