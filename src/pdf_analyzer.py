@@ -141,104 +141,113 @@ def extract_table_of_contents(pdf_path):
         pdf_path (str): Ruta al archivo PDF
         
     Returns:
-        pd.DataFrame: DataFrame con la información extraída de la tabla de contenido
+        list: Lista de diccionarios con entidad y línea completa de cada decreto/resolución
     """
-    # Leer el PDF
     reader = PdfReader(pdf_path)
     full_text = '\n'.join(page.extract_text() for page in reader.pages if page.extract_text())
-    
-    # Dividir el texto en líneas
     lines = full_text.split('\n')
-    
+
+    # Buscar el inicio de la tabla de contenido
+    toc_start = -1
+    for i, line in enumerate(lines):
+        if re.search(r'C\s*o\s*n\s*t\s*e\s*n\s*i\s*d\s*o', line, re.IGNORECASE):
+            toc_start = i
+            break
+    if toc_start == -1:
+        return []
+
+    # Buscar el final de la tabla de contenido (puede ser heurístico)
+    toc_end = len(lines)
+    for i in range(toc_start+1, len(lines)):
+        if re.search(r'P[áa]gina|^\d+$', lines[i], re.IGNORECASE):
+            toc_end = i
+            break
+    toc_lines = lines[toc_start:toc_end]
+
     data = []
     current_entity = None
-    current_title = []
-    collecting_title = False
-    
-    # Patrón para identificar entidades (ministerios u organismos)
-    entity_pattern = re.compile(r'^(Ministerio|Departamento|Entidad|Organismo)[^\n]+', re.IGNORECASE)
-    
-    # Patrón para identificar el inicio de un decreto o resolución
-    decree_start_pattern = re.compile(r'^(DECRETO|RESOLUCIÓN)\s+NÚMERO\s+\d+', re.IGNORECASE)
-    
-    # Patrón para identificar el final de un título (generalmente termina con un número de página)
-    page_number_pattern = re.compile(r'\s+\d+$')
-    
-    i = 0
-    while i < len(lines):
-        line = lines[i].strip()
-        
-        # Si la línea está vacía, continuar con la siguiente
+    entity_pattern = re.compile(r'^(MINISTERIO|DEPARTAMENTO|ENTIDAD|ORGANISMO)[^\n]*', re.IGNORECASE)
+    for line in toc_lines:
+        line = line.strip()
         if not line:
-            i += 1
             continue
-            
-        # Verificar si la línea es una entidad
-        entity_match = entity_pattern.search(line)
+        entity_match = entity_pattern.match(line)
         if entity_match:
-            # Si estábamos recolectando un título, guardarlo antes de cambiar de entidad
-            if collecting_title and current_title and current_entity:
-                full_title = ' '.join(current_title)
-                data.append({
-                    'nombre_decreto': full_title,
-                    'entidad': current_entity
-                })
-                current_title = []
-                collecting_title = False
-            
             current_entity = line.strip()
-            i += 1
             continue
-            
-        # Verificar si la línea es el inicio de un decreto
-        decree_match = decree_start_pattern.search(line)
-        if decree_match and current_entity:
-            # Si estábamos recolectando un título anterior, guardarlo
-            if collecting_title and current_title:
-                full_title = ' '.join(current_title)
-                data.append({
-                    'nombre_decreto': full_title,
-                    'entidad': current_entity
-                })
-            
-            current_title = [line]
-            collecting_title = True
-            i += 1
-            
-            # Continuar recolectando líneas hasta encontrar el número de página
-            while i < len(lines):
-                next_line = lines[i].strip()
-                
-                # Si encontramos una nueva entidad o decreto, terminar la recolección
-                if entity_pattern.search(next_line) or decree_start_pattern.search(next_line):
-                    break
-                    
-                # Si encontramos un número de página, terminar la recolección
-                if page_number_pattern.search(next_line):
-                    # Remover el número de página
-                    next_line = page_number_pattern.sub('', next_line).strip()
-                    current_title.append(next_line)
-                    break
-                
-                # Si la línea no está vacía, agregarla al título
-                if next_line:
-                    current_title.append(next_line)
-                
-                i += 1
-            
-            # Guardar el título completo
-            if current_title:
-                full_title = ' '.join(current_title)
-                data.append({
-                    'nombre_decreto': full_title,
-                    'entidad': current_entity
-                })
-                current_title = []
-                collecting_title = False
-        else:
-            i += 1
-    
-    return pd.DataFrame(data)
+        # Guardar cada línea de decreto/resolución junto con la entidad actual
+        if current_entity:
+            data.append({
+                'entidad': current_entity,
+                'linea': line
+            })
+    return data
+
+def clean_entity_name(entity):
+    """
+    Extrae solo el nombre puro de la entidad colombiana.
+    """
+    if not entity:
+        return entity
+    # Solo toma hasta el primer salto de línea o punto
+    entity = entity.split('\n')[0].split('.')[0]
+    # Lista de palabras que NO son parte del nombre de la entidad (pero permite preposiciones/conjunciones comunes)
+    stopwords = [
+        'COMUNICAR', 'POR', 'DECRETO', 'RESOLUCIÓN', 'RESOLUCION', 'ACUERDO', 'CIRCULAR', 'CONTENIDO', 'PRESENTE', 'DOCTORES'
+    ]
+    # Buscar el patrón de entidad al inicio
+    match = re.match(r'((MINISTERIO|DEPARTAMENTO|ORGANISMO|ENTIDAD)[A-ZÁÉÍÓÚÑ\s]+)', entity.strip(), re.IGNORECASE)
+    if match:
+        nombre = match.group(1).strip()
+        # Cortar en la primera stopword encontrada
+        nombre_split = nombre.split()
+        nombre_final = []
+        for word in nombre_split:
+            if word.upper() in stopwords:
+                break
+            nombre_final.append(word)
+        if nombre_final:
+            return ' '.join(nombre_final).title()
+        return nombre.title()
+    # Si no encuentra patrón, devuelve solo las primeras 8 palabras (por seguridad)
+    return ' '.join(entity.strip().split()[:8]).title()
+
+def normalize_text(text):
+    # Quita tildes y pasa a mayúsculas
+    return unicodedata.normalize('NFKD', text).encode('ASCII', 'ignore').decode('ASCII').upper() if text else ''
+
+def find_entity_fuzzy(toc_data, tipo, numero, anio):
+    tipo = normalize_text(tipo)
+    numero = normalize_text(numero)
+    anio = normalize_text(anio)
+    last_entity = None
+
+    # 1. Coincidencia completa
+    for entry in toc_data:
+        linea = normalize_text(entry['linea'])
+        if tipo in linea and numero in linea and anio in linea:
+            return clean_entity_name(entry['entidad'])
+        if entry['entidad']:
+            last_entity = entry['entidad']
+
+    # 2. Coincidencia por número y año
+    for entry in toc_data:
+        linea = normalize_text(entry['linea'])
+        if numero in linea and anio in linea:
+            return clean_entity_name(entry['entidad'])
+
+    # 3. Coincidencia solo por año
+    for entry in toc_data:
+        linea = normalize_text(entry['linea'])
+        if anio in linea:
+            return clean_entity_name(entry['entidad'])
+
+    # 4. Si no hay coincidencia, devolver la última entidad conocida
+    if last_entity:
+        return clean_entity_name(last_entity)
+
+    # 5. Si no hay ninguna, devolver un valor por defecto
+    return "INSTITUCIÓN DESCONOCIDA"
 
 def process_two_column_text(text):
     """
@@ -390,66 +399,42 @@ def extract_documents(pdf_path):
     Returns:
         pd.DataFrame: DataFrame con la información extraída
     """
-    # Leer el PDF
     reader = PdfReader(pdf_path)
-    
-    # Procesar cada página por separado
     processed_pages = []
     for page in reader.pages:
         if page.extract_text():
-            # Procesar el texto de la página para manejar el formato de dos columnas
             page_text = process_two_column_text(page.extract_text())
             processed_pages.append(page_text)
-    
-    # Unir todas las páginas procesadas
     full_text = '\n'.join(processed_pages)
-    
-    # Extraer la fecha de publicación del encabezado
     publication_date = extract_publication_date(full_text)
-    
-    # Extraer la tabla de contenido para obtener el mapeo de documentos a entidades
-    toc_df = extract_table_of_contents(pdf_path)
-    
-    # Crear un diccionario para mapear títulos a entidades
-    title_to_entity = {}
-    for _, row in toc_df.iterrows():
-        title_to_entity[row['nombre_decreto']] = row['entidad']
-    
-    # Patrones para identificar el inicio de diferentes tipos de documentos
+
+    # Extraer la tabla de contenido como lista de dicts
+    toc_data = extract_table_of_contents(pdf_path)
+
     document_patterns = [
-        r'DECRETO\s+NÚMERO\s+\d+\s+DE\s+\d{4}',
-        r'RESOLUCIÓN\s+NÚMERO\s+\d+\s+DE\s+\d{4}',
-        r'RESOLUCIÓN\s+EJECUTIVA\s+NÚMERO\s+\d+\s+DE\s+\d{4}',
-        r'CIRCULAR\s+EXTERNA\s+CONJUNTA\s+NÚMERO\s+\d+\s+DE\s+\d{4}',
-        r'ACUERDO\s+NÚMERO\s+\d+\s+DE\s+\d{4}'
+        r'(DECRETO)\s+N[ÚU]MERO\s+(\d+)\s+DE\s+(\d{4})',
+        r'(RESOLUCIÓN)\s+N[ÚU]MERO\s+(\d+)\s+DE\s+(\d{4})',
+        r'(RESOLUCIÓN EJECUTIVA)\s+N[ÚU]MERO\s+(\d+)\s+DE\s+(\d{4})',
+        r'(CIRCULAR EXTERNA CONJUNTA)\s+N[ÚU]MERO\s+(\d+)\s+DE\s+(\d{4})',
+        r'(ACUERDO)\s+N[ÚU]MERO\s+(\d+)\s+DE\s+(\d{4})'
     ]
-    
-    # Combinar todos los patrones
-    combined_pattern = '|'.join(f'({pattern})' for pattern in document_patterns)
-    
-    # Encontrar todos los documentos
+    combined_pattern = '|'.join(document_patterns)
+
     documents = []
     current_index = 0
-    
     while True:
-        # Buscar el siguiente documento
-        match = re.search(combined_pattern, full_text[current_index:])
+        match = re.search(combined_pattern, full_text[current_index:], re.IGNORECASE)
         if not match:
             break
-            
-        # Calcular el índice real en el texto completo
         start_index = current_index + match.start()
-        
-        # Extraer el contenido del documento
         content, next_index = extract_document_content(full_text, start_index)
-        
-        # Dividir el contenido en líneas y procesar
         lines = content.split('\n')
-        
-        # Extraer el título (primera línea)
         title = lines[0].strip()
-        
-        # Extraer la fecha si existe (línea entre paréntesis)
+        # Buscar tipo, número y año en el título
+        doc_match = re.match(r'(DECRETO|RESOLUCIÓN|RESOLUCIÓN EJECUTIVA|CIRCULAR EXTERNA CONJUNTA|ACUERDO)\s+N[ÚU]MERO\s+(\d+)\s+DE\s+(\d{4})', title, re.IGNORECASE)
+        tipo = doc_match.group(1).upper() if doc_match else ''
+        numero = doc_match.group(2) if doc_match else ''
+        anio = doc_match.group(3) if doc_match else ''
         date = ""
         description_lines = []
         for line in lines[1:]:
@@ -458,29 +443,12 @@ def extract_documents(pdf_path):
                 date = line
             else:
                 description_lines.append(line)
-        
-        # Construir la descripción completa
         description = '\n'.join(description_lines).strip()
-        
-        # Si hay fecha, incluirla en el título
         if date:
             title = f"{title}\n{date}"
-        
-        # Identificar el tipo de documento
         doc_type = identify_document_type(title)
-        
-        # Buscar la entidad en la tabla de contenido
-        institution = ""
-        # Intentar encontrar la entidad usando el título completo
-        if title in title_to_entity:
-            institution = title_to_entity[title]
-        else:
-            # Si no se encuentra el título exacto, intentar con una búsqueda parcial
-            for toc_title, toc_entity in title_to_entity.items():
-                if title.split('\n')[0] in toc_title:
-                    institution = toc_entity
-                    break
-        
+        # Buscar la entidad usando fuzzy
+        institution = find_entity_fuzzy(toc_data, tipo, numero, anio)
         documents.append({
             'tipo_documento': doc_type,
             'titulo': title,
@@ -488,9 +456,7 @@ def extract_documents(pdf_path):
             'fecha_publicacion': publication_date,
             'institucion': institution
         })
-        
         current_index = next_index
-    
     return documents
 
 def main():
