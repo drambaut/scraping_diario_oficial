@@ -6,6 +6,7 @@ from pathlib import Path
 from datetime import datetime
 import unicodedata
 import json
+from dateutil import parser
 
 def extract_purpose(text):
     """
@@ -329,6 +330,56 @@ def identify_document_type(title):
         return 'ACUERDO'
     return 'OTRO'
 
+def extract_publication_date(text):
+    """
+    Extrae la fecha de publicación del encabezado del PDF.
+    
+    Args:
+        text (str): Texto completo del PDF
+        
+    Returns:
+        str: Fecha de publicación en formato YYYY-MM-DD o cadena vacía si no se encuentra
+    """
+    # Buscar el patrón de fecha en el encabezado
+    date_pattern = r'Bogotá, D\. C\., [^,]+,\s+(\d{1,2})\s+de\s+([a-zA-Z]+)\s+de\s+(\d{4})'
+    match = re.search(date_pattern, text)
+    
+    if match:
+        try:
+            day = match.group(1)
+            month = match.group(2)
+            year = match.group(3)
+            # Convertir el mes de texto a número
+            month_map = {
+                'enero': '01', 'febrero': '02', 'marzo': '03', 'abril': '04',
+                'mayo': '05', 'junio': '06', 'julio': '07', 'agosto': '08',
+                'septiembre': '09', 'octubre': '10', 'noviembre': '11', 'diciembre': '12'
+            }
+            month_num = month_map.get(month.lower(), '01')
+            # Formatear la fecha como YYYY-MM-DD
+            return f"{year}-{month_num}-{day.zfill(2)}"
+        except:
+            return ""
+    return ""
+
+def extract_institution(text):
+    """
+    Extrae la institución del documento.
+    
+    Args:
+        text (str): Texto del documento
+        
+    Returns:
+        str: Nombre de la institución o cadena vacía si no se encuentra
+    """
+    # Buscar el patrón de institución al inicio del documento
+    institution_pattern = r'^(Ministerio|Departamento|Entidad|Organismo)[^\n]+'
+    match = re.search(institution_pattern, text, re.MULTILINE)
+    
+    if match:
+        return match.group(0).strip()
+    return ""
+
 def extract_documents(pdf_path):
     """
     Extrae todos los documentos del PDF y los estructura en un DataFrame.
@@ -352,6 +403,17 @@ def extract_documents(pdf_path):
     
     # Unir todas las páginas procesadas
     full_text = '\n'.join(processed_pages)
+    
+    # Extraer la fecha de publicación del encabezado
+    publication_date = extract_publication_date(full_text)
+    
+    # Extraer la tabla de contenido para obtener el mapeo de documentos a entidades
+    toc_df = extract_table_of_contents(pdf_path)
+    
+    # Crear un diccionario para mapear títulos a entidades
+    title_to_entity = {}
+    for _, row in toc_df.iterrows():
+        title_to_entity[row['nombre_decreto']] = row['entidad']
     
     # Patrones para identificar el inicio de diferentes tipos de documentos
     document_patterns = [
@@ -407,10 +469,24 @@ def extract_documents(pdf_path):
         # Identificar el tipo de documento
         doc_type = identify_document_type(title)
         
+        # Buscar la entidad en la tabla de contenido
+        institution = ""
+        # Intentar encontrar la entidad usando el título completo
+        if title in title_to_entity:
+            institution = title_to_entity[title]
+        else:
+            # Si no se encuentra el título exacto, intentar con una búsqueda parcial
+            for toc_title, toc_entity in title_to_entity.items():
+                if title.split('\n')[0] in toc_title:
+                    institution = toc_entity
+                    break
+        
         documents.append({
             'tipo_documento': doc_type,
             'titulo': title,
-            'descripcion': description
+            'descripcion': description,
+            'fecha_publicacion': publication_date,
+            'institucion': institution
         })
         
         current_index = next_index
