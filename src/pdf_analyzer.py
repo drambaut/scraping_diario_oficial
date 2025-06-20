@@ -469,15 +469,32 @@ def main():
     data_dir.mkdir(exist_ok=True)
     resultados_dir.mkdir(exist_ok=True)
     
+    # Obtener lista de PDFs
+    pdf_files = list(data_dir.glob('*.pdf'))
+    
+    if not pdf_files:
+        print("❌ No se encontraron archivos PDF en el directorio 'data'")
+        return
+    
+    print(f"📁 Procesando {len(pdf_files)} archivo(s) PDF...")
+    print("=" * 50)
+    
     # Procesar todos los PDFs en el directorio data
     all_data = []
-    for pdf_file in data_dir.glob('*.pdf'):
-        print(f"Procesando {pdf_file.name}...")
-        documents = extract_documents(str(pdf_file))
-        # Agregar el nombre del archivo a cada documento
-        for doc in documents:
-            doc['archivo'] = pdf_file.name
-        all_data.extend(documents)
+    for i, pdf_file in enumerate(pdf_files, 1):
+        print(f"📄 [{i}/{len(pdf_files)}] Procesando: {pdf_file.name}")
+        
+        try:
+            documents = extract_documents(str(pdf_file))
+            # Agregar el nombre del archivo a cada documento
+            for doc in documents:
+                doc['archivo'] = pdf_file.name
+            all_data.extend(documents)
+            
+            print(f"   ✅ {len(documents)} documento(s) extraído(s)")
+            
+        except Exception as e:
+            print(f"   ❌ Error procesando {pdf_file.name}: {str(e)}")
     
     if all_data:
         # Generar nombre de archivo con timestamp
@@ -488,20 +505,33 @@ def main():
         with open(output_file, 'w', encoding='utf-8') as f:
             json.dump(all_data, f, ensure_ascii=False, indent=2)
         
-        print(f"\nResultados guardados en: {output_file}")
-        print(f"Total de documentos procesados: {len(all_data)}")
+        print("\n" + "=" * 50)
+        print(f"🎉 Procesamiento completado exitosamente!")
+        print(f"📊 Total de documentos procesados: {len(all_data)}")
+        print(f"💾 Resultados guardados en: {output_file}")
         
         # Mostrar resumen por tipo de documento
-        print("\nResumen por tipo de documento:")
+        print("\n📋 Resumen por tipo de documento:")
         doc_types = {}
         for doc in all_data:
             doc_type = doc['tipo_documento']
             doc_types[doc_type] = doc_types.get(doc_type, 0) + 1
         
-        for doc_type, count in doc_types.items():
-            print(f"{doc_type}: {count}")
+        for doc_type, count in sorted(doc_types.items()):
+            print(f"   • {doc_type}: {count}")
+            
+        # Mostrar resumen por institución
+        print("\n🏛️  Resumen por institución:")
+        institutions = {}
+        for doc in all_data:
+            institution = doc['institucion']
+            institutions[institution] = institutions.get(institution, 0) + 1
+        
+        for institution, count in sorted(institutions.items()):
+            print(f"   • {institution}: {count}")
+            
     else:
-        print("No se encontraron archivos PDF en el directorio 'data'")
+        print("\n❌ No se extrajeron documentos de los archivos PDF")
 
 if __name__ == "__main__":
     main() 
